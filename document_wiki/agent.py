@@ -14,6 +14,7 @@ from typing import Any
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 
+from document_wiki.middleware import DocumentWikiWriteVerificationMiddleware
 from document_wiki.prompts import INGEST_SUPERVISOR_PROMPT, QUERY_AGENT_PROMPT
 from document_wiki.settings import DocumentWikiSettings, load_document_wiki_settings
 from document_wiki.subagents import (
@@ -55,7 +56,10 @@ def build_document_wiki_ingest_agent(
     )
     backend = _build_filesystem_backend(resolved_settings)
     skill_sources = _build_skill_sources(resolved_settings)
-    common_middleware = _build_common_middleware(middleware)
+    common_middleware = _build_common_middleware(
+        middleware,
+        backend=backend,
+    )
 
     source_profiler_agent = create_deep_agent(
         **build_source_profiler_subagent_spec(
@@ -130,13 +134,19 @@ def build_document_wiki_query_agent(
         workspace_root=workspace_root,
         document_wiki_root=document_wiki_root,
     )
+    backend = _build_filesystem_backend(resolved_settings)
+    skill_sources = _build_skill_sources(resolved_settings)
+    common_middleware = _build_common_middleware(
+        middleware,
+        backend=backend,
+    )
     return create_deep_agent(
         model=model,
         tools=[],
         system_prompt=QUERY_AGENT_PROMPT,
-        skills=_build_skill_sources(resolved_settings),
-        backend=_build_filesystem_backend(resolved_settings),
-        middleware=_build_common_middleware(middleware),
+        skills=skill_sources,
+        backend=backend,
+        middleware=common_middleware,
         checkpointer=checkpointer,
     )
 
@@ -175,17 +185,25 @@ def _build_skill_sources(settings: DocumentWikiSettings) -> list[str]:
     return ["/skills/"]
 
 
-def _build_common_middleware(middleware: list[Any] | None) -> list[Any]:
+def _build_common_middleware(
+    middleware: list[Any] | None,
+    *,
+    backend: Any,
+) -> list[Any]:
     """Возвращает список middleware для document_wiki агентов.
 
     Args:
         middleware: Пользовательский список middleware или ``None``.
+        backend: Filesystem backend для проверки фактической записи файлов.
 
     Returns:
         Новый список middleware для передачи в ``create_deep_agent``.
     """
 
-    return list(middleware or [])
+    return [
+        DocumentWikiWriteVerificationMiddleware(backend=backend),
+        *list(middleware or []),
+    ]
 
 
 __all__ = [

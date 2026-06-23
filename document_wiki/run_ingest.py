@@ -4,6 +4,7 @@
 - run_document_wiki_ingest: запуск добавления одного source-файла в wiki.
 - build_ingest_message: сборка пользовательского сообщения для IngestSupervisor.
 - main: запуск ingest-agent из IDE по константам файла.
+- format_wiki_files_report: формирование отчета о фактических wiki-файлах.
 - _last_message_text: извлечение текста последнего сообщения агента.
 """
 
@@ -122,7 +123,34 @@ def main() -> int:
         },
     )
     print(_last_message_text(result))
+    print()
+    print(format_wiki_files_report())
     return 0
+
+
+def format_wiki_files_report(
+    document_wiki_root: str | Path | None = DOCUMENT_WIKI_ROOT,
+) -> str:
+    """Формирует отчет о фактически существующих wiki-файлах.
+
+    Args:
+        document_wiki_root: Корень директории document_wiki или ``None`` для папки
+            рядом с текущим файлом.
+
+    Returns:
+        Markdown-отчет со списком файлов в `wiki/`.
+    """
+
+    root = Path(document_wiki_root) if document_wiki_root is not None else Path(__file__).resolve().parent
+    wiki_root = root / "wiki"
+    if not wiki_root.exists():
+        return "## Фактические wiki-файлы\nwiki/ не существует."
+
+    files = sorted(path.relative_to(root).as_posix() for path in wiki_root.rglob("*") if path.is_file())
+    if not files:
+        return "## Фактические wiki-файлы\nФайлы не найдены."
+    lines = ["## Фактические wiki-файлы", *[f"- {path}" for path in files]]
+    return "\n".join(lines)
 
 
 def _last_message_text(result: Any) -> str:
@@ -152,6 +180,7 @@ def _last_message_text(result: Any) -> str:
 
 __all__ = [
     "build_ingest_message",
+    "format_wiki_files_report",
     "main",
     "run_document_wiki_ingest",
 ]

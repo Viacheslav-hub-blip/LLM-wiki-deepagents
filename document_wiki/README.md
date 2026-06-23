@@ -84,6 +84,11 @@ $env:OPENAI_API_KEY = "<OPENROUTER_API_KEY>"
 - `dimensions-reader` — читает текущую wiki и возвращает compact wiki map;
 - `wiki-writer` — обновляет `wiki/index.md` и релевантные `wiki/dimensions/*.md`.
 
+Запись wiki-файлов дополнительно проверяется middleware `DocumentWikiWriteVerificationMiddleware`.
+После `write_file` или `edit_file` middleware читает записанный файл обратно и добавляет
+в результат tool строку `DocumentWikiWriteVerification`. Writer должен включать в summary
+только подтвержденные записи.
+
 `build_document_wiki_query_agent` собирает отдельного агента поиска. Он читает `wiki/index.md`, релевантные dimensions и source-файлы, затем отвечает с указанием источников.
 
 ## Поток Добавления Документа
@@ -105,6 +110,9 @@ summary обновления wiki
 `source-profiler` не знает текущую wiki и не утверждает, какие dimensions уже существуют. Он предлагает только кандидатные смысловые разрезы по содержанию source-файла.
 
 Решение обновить существующий dimension или создать новый принимает `wiki-writer` на основе `source_profile` и `current_wiki_map`.
+
+После запуска `run_ingest.py` дополнительно печатается фактический список файлов в `wiki/`.
+Этот список полезен для проверки, что summary агента совпадает с реальной файловой системой.
 
 ## Поток Поиска
 
