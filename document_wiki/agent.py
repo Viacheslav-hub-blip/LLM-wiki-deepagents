@@ -7,8 +7,6 @@
 - _build_skill_sources: подготовка путей к skills document_wiki.
 - _build_common_middleware: подготовка общего списка middleware.
 - _build_system_prompt: добавление GigaChat runtime-практик к базовому prompt.
-- _register_document_wiki_harness_profile: регистрация harness profile основного DeepAgent.
-- _build_optional_gigachat_middleware: подключение middleware основного DeepAgent, если они доступны.
 - describe_document_wiki_runtime: описание фактически подключенного runtime-каркаса.
 - format_document_wiki_runtime_report: markdown-отчет о фактически подключенном runtime-каркасе.
 """
@@ -17,42 +15,25 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
 
 from document_wiki.middleware import DocumentWikiWriteVerificationMiddleware
 from document_wiki.prompts import INGEST_SUPERVISOR_PROMPT, QUERY_AGENT_PROMPT
+from document_wiki.runtime import (
+    DocumentWikiFilesystemBackend,
+    FilesystemPathContractMiddleware,
+    LoopBreakerMiddleware,
+    PromptToolDescriptionsMiddleware,
+    TOOL_DESCRIPTION_OVERRIDES,
+    ThinkToolMiddleware,
+    build_gigachat_practices_prompt,
+    register_document_wiki_harness_profile,
+)
 from document_wiki.settings import DocumentWikiSettings, load_document_wiki_settings
 from document_wiki.subagents import (
     build_dimensions_reader_subagent_spec,
     build_ingest_subagent_specs,
     build_source_profiler_subagent_spec,
     build_wiki_writer_subagent_spec,
-)
-
-try:
-    from deep_agent.middleware.filesystem_path_contract import FilesystemPathContractMiddleware
-    from deep_agent.middleware.gigachat_runtime import LoopBreakerMiddleware, ThinkToolMiddleware
-    from deep_agent.middleware.tool_descriptions import PromptToolDescriptionsMiddleware
-    from deep_agent.prompts.gigachat import build_gigachat_practices_prompt
-    from deep_agent.prompts.tool_contracts import TOOL_DESCRIPTION_OVERRIDES
-    from deep_agent.runtime.filesystem import Utf8FilesystemBackend
-    from deep_agent.runtime.harness import register_analytics_harness_profile
-except ImportError:
-    FilesystemPathContractMiddleware = None  # type: ignore[assignment]
-    LoopBreakerMiddleware = None  # type: ignore[assignment]
-    PromptToolDescriptionsMiddleware = None  # type: ignore[assignment]
-    ThinkToolMiddleware = None  # type: ignore[assignment]
-    TOOL_DESCRIPTION_OVERRIDES = None  # type: ignore[assignment]
-    Utf8FilesystemBackend = None  # type: ignore[assignment]
-    build_gigachat_practices_prompt = None  # type: ignore[assignment]
-    register_analytics_harness_profile = None  # type: ignore[assignment]
-
-
-DOCUMENT_WIKI_HARNESS_PROFILE_KEYS = (
-    "openai",
-    "kitai",
-    "gigachat",
-    "GigaChat-3-Ultra",
 )
 
 
@@ -85,7 +66,7 @@ def build_document_wiki_ingest_agent(
         workspace_root=workspace_root,
         document_wiki_root=document_wiki_root,
     )
-    _register_document_wiki_harness_profile()
+    register_document_wiki_harness_profile()
     backend = _build_filesystem_backend(resolved_settings)
     skill_sources = _build_skill_sources(resolved_settings)
     common_middleware = _build_common_middleware(
@@ -169,29 +150,8 @@ def _build_system_prompt(base_prompt: str) -> str:
         Prompt с GigaChat-practices, если основной пакет ``deep_agent`` доступен.
     """
 
-    if build_gigachat_practices_prompt is None:
-        return base_prompt
     practices_prompt = build_gigachat_practices_prompt()
     return f"{base_prompt}\n\n{practices_prompt}"
-
-
-def _register_document_wiki_harness_profile() -> None:
-    """Регистрирует harness profile основного DeepAgent для document_wiki.
-
-    Args:
-        Отсутствуют.
-
-    Returns:
-        ``None``. Если основной пакет ``deep_agent`` недоступен, функция ничего не делает.
-    """
-
-    if register_analytics_harness_profile is None:
-        return
-    for profile_key in DOCUMENT_WIKI_HARNESS_PROFILE_KEYS:
-        register_analytics_harness_profile(
-            profile_key,
-            enable_general_purpose=False,
-        )
 
 
 def build_document_wiki_query_agent(
@@ -223,7 +183,7 @@ def build_document_wiki_query_agent(
         workspace_root=workspace_root,
         document_wiki_root=document_wiki_root,
     )
-    _register_document_wiki_harness_profile()
+    register_document_wiki_harness_profile()
     backend = _build_filesystem_backend(resolved_settings)
     skill_sources = _build_skill_sources(resolved_settings)
     common_middleware = _build_common_middleware(
@@ -274,9 +234,9 @@ def describe_document_wiki_runtime(
         "document_wiki_root": str(resolved_settings.document_wiki_root),
         "backend": type(backend).__name__,
         "middleware": [type(item).__name__ for item in middleware_items],
-        "deep_agent_runtime_available": build_gigachat_practices_prompt is not None,
+        "document_wiki_runtime_available": True,
         "gigachat_practices_enabled": "GigaChat Execution Practices" in _build_system_prompt(""),
-        "harness_profile_registration_available": register_analytics_harness_profile is not None,
+        "harness_profile_registration_available": True,
     }
 
 
@@ -303,7 +263,7 @@ def format_document_wiki_runtime_report(
         workspace_root=workspace_root,
         document_wiki_root=document_wiki_root,
     )
-    core_status = "enabled" if runtime["deep_agent_runtime_available"] else "disabled"
+    core_status = "enabled" if runtime["document_wiki_runtime_available"] else "disabled"
     practices_status = "enabled" if runtime["gigachat_practices_enabled"] else "disabled"
     harness_status = "enabled" if runtime["harness_profile_registration_available"] else "disabled"
     middleware_list = ", ".join(runtime["middleware"]) or "none"
@@ -312,7 +272,7 @@ def format_document_wiki_runtime_report(
             "## DocumentWiki runtime",
             f"- document_wiki_root: {runtime['document_wiki_root']}",
             f"- backend: {runtime['backend']}",
-            f"- core DeepAgent runtime: {core_status}",
+            f"- standalone DocumentWiki runtime: {core_status}",
             f"- GigaChat practices: {practices_status}",
             f"- harness profile registration: {harness_status}",
             f"- middleware: {middleware_list}",
@@ -320,7 +280,7 @@ def format_document_wiki_runtime_report(
     )
 
 
-def _build_filesystem_backend(settings: DocumentWikiSettings) -> FilesystemBackend:
+def _build_filesystem_backend(settings: DocumentWikiSettings) -> DocumentWikiFilesystemBackend:
     """Создает filesystem backend с корнем в директории document_wiki.
 
     Args:
@@ -335,8 +295,7 @@ def _build_filesystem_backend(settings: DocumentWikiSettings) -> FilesystemBacke
     settings.wiki_dir.mkdir(parents=True, exist_ok=True)
     settings.dimensions_dir.mkdir(parents=True, exist_ok=True)
     settings.skills_dir.mkdir(parents=True, exist_ok=True)
-    backend_class = Utf8FilesystemBackend or FilesystemBackend
-    return backend_class(
+    return DocumentWikiFilesystemBackend(
         root_dir=settings.document_wiki_root,
         virtual_mode=True,
     )
@@ -373,7 +332,7 @@ def _build_common_middleware(
     """
 
     return [
-        *_build_optional_gigachat_middleware(
+        *_build_document_wiki_runtime_middleware(
             backend=backend,
             settings=settings,
         ),
@@ -382,12 +341,12 @@ def _build_common_middleware(
     ]
 
 
-def _build_optional_gigachat_middleware(
+def _build_document_wiki_runtime_middleware(
     *,
     backend: Any,
     settings: DocumentWikiSettings,
 ) -> list[Any]:
-    """Возвращает middleware основного DeepAgent, если они доступны.
+    """Возвращает автономные runtime middleware document_wiki.
 
     Args:
         backend: Filesystem backend document_wiki.
@@ -397,21 +356,15 @@ def _build_optional_gigachat_middleware(
         Список middleware для стабилизации tool-calling у GigaChat/KitAI.
     """
 
-    result: list[Any] = []
-    if PromptToolDescriptionsMiddleware is not None and TOOL_DESCRIPTION_OVERRIDES is not None:
-        result.append(PromptToolDescriptionsMiddleware(TOOL_DESCRIPTION_OVERRIDES))
-    if ThinkToolMiddleware is not None:
-        result.append(ThinkToolMiddleware())
-    if FilesystemPathContractMiddleware is not None:
-        result.append(
-            FilesystemPathContractMiddleware(
-                workspace_root=settings.document_wiki_root.resolve(),
-                backend=backend,
-            )
-        )
-    if LoopBreakerMiddleware is not None:
-        result.append(LoopBreakerMiddleware())
-    return result
+    return [
+        PromptToolDescriptionsMiddleware(TOOL_DESCRIPTION_OVERRIDES),
+        ThinkToolMiddleware(),
+        FilesystemPathContractMiddleware(
+            workspace_root=settings.document_wiki_root.resolve(),
+            backend=backend,
+        ),
+        LoopBreakerMiddleware(),
+    ]
 
 
 __all__ = [
