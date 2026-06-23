@@ -36,7 +36,9 @@ DOCUMENT_WIKI_HARNESS_PROFILE_KEYS = (
     "openai",
     "kitai",
     "gigachat",
+    "deepagentskitaichatmodel",
     "GigaChat-3-Ultra",
+    "deepagentskitaichatmodel:GigaChat-3-Ultra",
 )
 
 TOOL_DESCRIPTION_OVERRIDES = {
