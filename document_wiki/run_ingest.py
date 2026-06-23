@@ -9,6 +9,8 @@
 - format_wiki_files_report: формирование отчета о фактических wiki-файлах.
 - build_ingest_model: создание модели для запуска ingest-agent.
 - source_paths_to_process: получение списка source-файлов для обработки.
+- has_wiki_changes: проверка наличия фактических изменений wiki.
+- build_no_change_retry_instruction: сборка инструкции для повторной попытки записи.
 - _last_message_text: извлечение текста последнего сообщения агента.
 """
 
@@ -33,6 +35,7 @@ urllib3.disable_warnings()
 
 DEFAULT_RECURSION_LIMIT = 100
 DEFAULT_THREAD_ID = "document-wiki-ingest-ide"
+MAX_NO_CHANGE_RETRIES = 1
 WORKSPACE_ROOT = "."
 DOCUMENT_WIKI_ROOT = None
 SOURCE_PATH = "sources/doc_002.md"
@@ -57,6 +60,7 @@ def run_document_wiki_ingest(
     workspace_root: str | Path | None = None,
     document_wiki_root: str | Path | None = None,
     invoke_config: dict[str, Any] | None = None,
+    extra_instruction: str | None = None,
 ) -> Any:
     """Запускает ingest-agent для уже существующего source markdown-файла.
 
@@ -69,6 +73,7 @@ def run_document_wiki_ingest(
         workspace_root: Корень рабочего окружения, если ``settings`` не переданы.
         document_wiki_root: Корень директории document_wiki, если ``settings`` не переданы.
         invoke_config: Дополнительный config для вызова LangGraph agent.
+        extra_instruction: Дополнительная инструкция для текущего запуска ingest-agent.
 
     Returns:
         Результат выполнения ingest-agent.
@@ -101,26 +106,42 @@ def run_document_wiki_ingest(
         settings=resolved_settings,
     )
     return agent.invoke(
-        {"messages": [{"role": "user", "content": build_ingest_message(source_path_for_agent)}]},
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": build_ingest_message(
+                        source_path_for_agent,
+                        extra_instruction=extra_instruction,
+                    ),
+                }
+            ]
+        },
         config=invoke_config,
     )
 
 
-def build_ingest_message(source_path: str) -> str:
+def build_ingest_message(source_path: str, *, extra_instruction: str | None = None) -> str:
     """Собирает пользовательское сообщение для IngestSupervisor.
 
     Args:
         source_path: POSIX-путь к source-файлу относительно директории document_wiki.
+        extra_instruction: Дополнительная инструкция для усиления конкретного запуска.
 
     Returns:
         Текст сообщения для запуска ingest-процесса.
     """
 
-    return (
+    message = (
         "Добавь markdown-файл в document_wiki.\n\n"
         f"source_path: {source_path}\n\n"
-        "Файл уже существует в sources/."
+        "Файл уже существует в sources/.\n"
+        "Финальный ответ должен опираться только на реально выполненные write_file/edit_file. "
+        "Не пиши, что wiki-файл создан или обновлен, если соответствующий tool call не был выполнен."
     )
+    if extra_instruction:
+        message = f"{message}\n\nДополнительная инструкция:\n{extra_instruction}"
+    return message
 
 
 def build_ingest_model() -> Any:
@@ -185,25 +206,40 @@ def main() -> int:
     for source_path in source_paths_to_process(settings):
         started_at = time.perf_counter()
         print(f"\nОбработка файла: {source_path}")
-        before_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
-        try:
-            result = run_document_wiki_ingest(
-                model=run_model,
-                source_path=source_path,
-                settings=settings,
-                invoke_config={
-                    "recursion_limit": DEFAULT_RECURSION_LIMIT,
-                    "configurable": {"thread_id": f"{DEFAULT_THREAD_ID}-{Path(source_path).stem}"},
-                },
-            )
-        except Exception as error:  # noqa: BLE001
-            print(f"Ошибка при обработке {source_path}: {error}")
-            continue
+        for attempt in range(MAX_NO_CHANGE_RETRIES + 1):
+            before_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
+            retry_instruction = None
+            if attempt > 0:
+                retry_instruction = build_no_change_retry_instruction(source_path)
+                print("Повторная попытка: предыдущий запуск не изменил ни одного wiki-файла.")
+            try:
+                result = run_document_wiki_ingest(
+                    model=run_model,
+                    source_path=source_path,
+                    settings=settings,
+                    invoke_config={
+                        "recursion_limit": DEFAULT_RECURSION_LIMIT,
+                        "configurable": {
+                            "thread_id": f"{DEFAULT_THREAD_ID}-{Path(source_path).stem}-attempt-{attempt + 1}"
+                        },
+                    },
+                    extra_instruction=retry_instruction,
+                )
+            except Exception as error:  # noqa: BLE001
+                print(f"Ошибка при обработке {source_path}: {error}")
+                break
 
-        after_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
-        print(_last_message_text(result))
-        print()
-        print(format_wiki_change_report(before_snapshot, after_snapshot))
+            after_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
+            print(_last_message_text(result))
+            print()
+            print(format_wiki_change_report(before_snapshot, after_snapshot))
+            if has_wiki_changes(before_snapshot, after_snapshot):
+                break
+            if attempt == MAX_NO_CHANGE_RETRIES:
+                print(
+                    "ОШИБКА КОНТРОЛЯ: агент завершил обработку, но физические wiki-файлы "
+                    f"не изменились для {source_path}."
+                )
         print(f"Время обработки: {time.perf_counter() - started_at:.2f} секунд")
 
     print()
@@ -289,6 +325,46 @@ def format_wiki_change_report(
     return "\n".join(lines)
 
 
+def has_wiki_changes(
+    before: dict[str, dict[str, str | int]],
+    after: dict[str, dict[str, str | int]],
+) -> bool:
+    """Проверяет, были ли фактические изменения wiki-файлов.
+
+    Args:
+        before: Snapshot wiki-файлов до запуска ingest-agent.
+        after: Snapshot wiki-файлов после запуска ingest-agent.
+
+    Returns:
+        ``True``, если wiki-файлы были созданы, изменены или удалены.
+    """
+
+    before_paths = set(before)
+    after_paths = set(after)
+    if before_paths != after_paths:
+        return True
+    return any(before[path].get("sha256") != after[path].get("sha256") for path in before_paths)
+
+
+def build_no_change_retry_instruction(source_path: str) -> str:
+    """Собирает инструкцию для повторной попытки, если wiki не изменилась.
+
+    Args:
+        source_path: POSIX-путь к source-файлу относительно директории document_wiki.
+
+    Returns:
+        Текст инструкции для повторного запуска ingest-agent.
+    """
+
+    return (
+        f"Предыдущая попытка обработки `{source_path}` не изменила ни одного физического wiki-файла. "
+        "Повтори обработку этого же source-файла заново. Обязательно прочитай source-файл, затем "
+        "выполни write_file или edit_file для wiki/index.md и для всех релевантных файлов "
+        "wiki/dimensions/*.md. Если нужно создать новый dimension-файл, создай его через write_file. "
+        "Не завершай работу финальным ответом, пока фактически не выполнишь запись wiki-файлов."
+    )
+
+
 def format_wiki_files_report(
     document_wiki_root: str | Path | None = DOCUMENT_WIKI_ROOT,
 ) -> str:
@@ -357,9 +433,11 @@ def _last_message_text(result: Any) -> str:
 __all__ = [
     "build_ingest_message",
     "build_ingest_model",
+    "build_no_change_retry_instruction",
     "collect_wiki_snapshot",
     "format_wiki_change_report",
     "format_wiki_files_report",
+    "has_wiki_changes",
     "main",
     "run_document_wiki_ingest",
     "source_paths_to_process",
