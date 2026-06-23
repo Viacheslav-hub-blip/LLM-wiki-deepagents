@@ -26,7 +26,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from document_wiki.agent import build_document_wiki_ingest_agent
+from document_wiki.agent import build_document_wiki_ingest_agent, format_document_wiki_runtime_report
 from document_wiki.paths import relative_to_document_wiki, require_inside_document_wiki
 from document_wiki.settings import DocumentWikiSettings, load_document_wiki_settings
 
@@ -202,6 +202,8 @@ def main() -> int:
         workspace_root=WORKSPACE_ROOT,
         document_wiki_root=DOCUMENT_WIKI_ROOT,
     )
+    print(format_document_wiki_runtime_report(settings))
+    print()
     run_model = build_ingest_model()
 
     for source_path in source_paths_to_process(settings):

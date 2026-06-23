@@ -9,6 +9,8 @@
 - _build_system_prompt: добавление GigaChat runtime-практик к базовому prompt.
 - _register_document_wiki_harness_profile: регистрация harness profile основного DeepAgent.
 - _build_optional_gigachat_middleware: подключение middleware основного DeepAgent, если они доступны.
+- describe_document_wiki_runtime: описание фактически подключенного runtime-каркаса.
+- format_document_wiki_runtime_report: markdown-отчет о фактически подключенном runtime-каркасе.
 """
 
 from pathlib import Path
@@ -240,6 +242,84 @@ def build_document_wiki_query_agent(
     )
 
 
+def describe_document_wiki_runtime(
+    settings: DocumentWikiSettings | None = None,
+    *,
+    workspace_root: str | Path | None = None,
+    document_wiki_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Описывает фактически подключенный runtime document_wiki.
+
+    Args:
+        settings: Готовые настройки document_wiki. Если не переданы, создаются из ``workspace_root`` и
+            ``document_wiki_root``.
+        workspace_root: Корень рабочего окружения, если ``settings`` не переданы.
+        document_wiki_root: Корень директории document_wiki, если ``settings`` не переданы.
+
+    Returns:
+        Словарь с типом backend, списком middleware и признаком доступности runtime основного DeepAgent.
+    """
+
+    resolved_settings = settings or load_document_wiki_settings(
+        workspace_root=workspace_root,
+        document_wiki_root=document_wiki_root,
+    )
+    backend = _build_filesystem_backend(resolved_settings)
+    middleware_items = _build_common_middleware(
+        None,
+        backend=backend,
+        settings=resolved_settings,
+    )
+    return {
+        "document_wiki_root": str(resolved_settings.document_wiki_root),
+        "backend": type(backend).__name__,
+        "middleware": [type(item).__name__ for item in middleware_items],
+        "deep_agent_runtime_available": build_gigachat_practices_prompt is not None,
+        "gigachat_practices_enabled": "GigaChat Execution Practices" in _build_system_prompt(""),
+        "harness_profile_registration_available": register_analytics_harness_profile is not None,
+    }
+
+
+def format_document_wiki_runtime_report(
+    settings: DocumentWikiSettings | None = None,
+    *,
+    workspace_root: str | Path | None = None,
+    document_wiki_root: str | Path | None = None,
+) -> str:
+    """Формирует markdown-отчет о фактически подключенном runtime document_wiki.
+
+    Args:
+        settings: Готовые настройки document_wiki. Если не переданы, создаются из ``workspace_root`` и
+            ``document_wiki_root``.
+        workspace_root: Корень рабочего окружения, если ``settings`` не переданы.
+        document_wiki_root: Корень директории document_wiki, если ``settings`` не переданы.
+
+    Returns:
+        Markdown-строка с backend, middleware и статусом подключения основного DeepAgent runtime.
+    """
+
+    runtime = describe_document_wiki_runtime(
+        settings,
+        workspace_root=workspace_root,
+        document_wiki_root=document_wiki_root,
+    )
+    core_status = "enabled" if runtime["deep_agent_runtime_available"] else "disabled"
+    practices_status = "enabled" if runtime["gigachat_practices_enabled"] else "disabled"
+    harness_status = "enabled" if runtime["harness_profile_registration_available"] else "disabled"
+    middleware_list = ", ".join(runtime["middleware"]) or "none"
+    return "\n".join(
+        [
+            "## DocumentWiki runtime",
+            f"- document_wiki_root: {runtime['document_wiki_root']}",
+            f"- backend: {runtime['backend']}",
+            f"- core DeepAgent runtime: {core_status}",
+            f"- GigaChat practices: {practices_status}",
+            f"- harness profile registration: {harness_status}",
+            f"- middleware: {middleware_list}",
+        ]
+    )
+
+
 def _build_filesystem_backend(settings: DocumentWikiSettings) -> FilesystemBackend:
     """Создает filesystem backend с корнем в директории document_wiki.
 
@@ -337,4 +417,6 @@ def _build_optional_gigachat_middleware(
 __all__ = [
     "build_document_wiki_ingest_agent",
     "build_document_wiki_query_agent",
+    "describe_document_wiki_runtime",
+    "format_document_wiki_runtime_report",
 ]
