@@ -4,10 +4,13 @@
 - run_document_wiki_ingest: запуск добавления одного source-файла в wiki.
 - build_ingest_message: сборка пользовательского сообщения для IngestSupervisor.
 - main: запуск ingest-agent из IDE по константам файла.
+- collect_wiki_snapshot: сбор фактического состояния wiki-файлов.
+- format_wiki_change_report: формирование отчета о реальных изменениях wiki.
 - format_wiki_files_report: формирование отчета о фактических wiki-файлах.
 - _last_message_text: извлечение текста последнего сообщения агента.
 """
 
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any
@@ -113,19 +116,104 @@ def main() -> int:
     """
 
     ensure_openai_api_key()
-    result = run_document_wiki_ingest(
-        source_path=SOURCE_PATH,
+    settings = load_document_wiki_settings(
         workspace_root=WORKSPACE_ROOT,
         document_wiki_root=DOCUMENT_WIKI_ROOT,
+    )
+    before_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
+    result = run_document_wiki_ingest(
+        source_path=SOURCE_PATH,
+        settings=settings,
         invoke_config={
             "recursion_limit": DEFAULT_RECURSION_LIMIT,
             "configurable": {"thread_id": DEFAULT_THREAD_ID},
         },
     )
+    after_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
     print(_last_message_text(result))
     print()
-    print(format_wiki_files_report())
+    print(format_wiki_change_report(before_snapshot, after_snapshot))
+    print()
+    print(format_wiki_files_report(settings.document_wiki_root))
     return 0
+
+
+def collect_wiki_snapshot(
+    document_wiki_root: str | Path | None = DOCUMENT_WIKI_ROOT,
+) -> dict[str, dict[str, str | int]]:
+    """Собирает фактическое состояние файлов в директории wiki.
+
+    Args:
+        document_wiki_root: Корень директории document_wiki или ``None`` для папки
+            рядом с текущим файлом.
+
+    Returns:
+        Словарь ``путь -> метаданные`` с размером и SHA-256 содержимого файла.
+    """
+
+    root = _resolve_document_wiki_root(document_wiki_root)
+    wiki_root = root / "wiki"
+    if not wiki_root.exists():
+        return {}
+
+    snapshot: dict[str, dict[str, str | int]] = {}
+    for path in sorted(wiki_root.rglob("*")):
+        if not path.is_file():
+            continue
+        content = path.read_bytes()
+        relative_path = path.relative_to(root).as_posix()
+        snapshot[relative_path] = {
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    return snapshot
+
+
+def format_wiki_change_report(
+    before: dict[str, dict[str, str | int]],
+    after: dict[str, dict[str, str | int]],
+) -> str:
+    """Формирует отчет о реальных изменениях wiki после ingest.
+
+    Args:
+        before: Snapshot wiki-файлов до запуска ingest-agent.
+        after: Snapshot wiki-файлов после запуска ingest-agent.
+
+    Returns:
+        Markdown-отчет со списком реально созданных, измененных и удаленных файлов.
+    """
+
+    before_paths = set(before)
+    after_paths = set(after)
+    created = sorted(after_paths - before_paths)
+    deleted = sorted(before_paths - after_paths)
+    changed = sorted(
+        path
+        for path in before_paths & after_paths
+        if before[path].get("sha256") != after[path].get("sha256")
+    )
+
+    lines = ["## Фактические изменения wiki"]
+    if not created and not changed and not deleted:
+        lines.append("Созданных, измененных или удаленных wiki-файлов не обнаружено.")
+        return "\n".join(lines)
+
+    if created:
+        lines.append("")
+        lines.append("### Создано фактически")
+        lines.extend(f"- {path} ({after[path]['size']} байт)" for path in created)
+    if changed:
+        lines.append("")
+        lines.append("### Изменено фактически")
+        lines.extend(
+            f"- {path} ({before[path]['size']} -> {after[path]['size']} байт)"
+            for path in changed
+        )
+    if deleted:
+        lines.append("")
+        lines.append("### Удалено фактически")
+        lines.extend(f"- {path}" for path in deleted)
+    return "\n".join(lines)
 
 
 def format_wiki_files_report(
@@ -141,7 +229,7 @@ def format_wiki_files_report(
         Markdown-отчет со списком файлов в `wiki/`.
     """
 
-    root = Path(document_wiki_root) if document_wiki_root is not None else Path(__file__).resolve().parent
+    root = _resolve_document_wiki_root(document_wiki_root)
     wiki_root = root / "wiki"
     if not wiki_root.exists():
         return "## Фактические wiki-файлы\nwiki/ не существует."
@@ -151,6 +239,21 @@ def format_wiki_files_report(
         return "## Фактические wiki-файлы\nФайлы не найдены."
     lines = ["## Фактические wiki-файлы", *[f"- {path}" for path in files]]
     return "\n".join(lines)
+
+
+def _resolve_document_wiki_root(document_wiki_root: str | Path | None) -> Path:
+    """Возвращает абсолютный путь к директории document_wiki.
+
+    Args:
+        document_wiki_root: Явный путь к document_wiki или ``None``.
+
+    Returns:
+        Абсолютный путь к директории document_wiki.
+    """
+
+    if document_wiki_root is None:
+        return Path(__file__).resolve().parent
+    return Path(document_wiki_root).resolve()
 
 
 def _last_message_text(result: Any) -> str:
@@ -180,6 +283,8 @@ def _last_message_text(result: Any) -> str:
 
 __all__ = [
     "build_ingest_message",
+    "collect_wiki_snapshot",
+    "format_wiki_change_report",
     "format_wiki_files_report",
     "main",
     "run_document_wiki_ingest",
