@@ -24,6 +24,7 @@ import urllib3
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from document_wiki.agent import build_document_wiki_ingest_agent
 from document_wiki.paths import relative_to_document_wiki, require_inside_document_wiki
