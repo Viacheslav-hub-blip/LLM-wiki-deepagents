@@ -1,34 +1,52 @@
-"""Entrypoint для запуска ingest-agent по готовому source markdown-файлу.
+"""Entrypoint для запуска ingest-agent по одному или нескольким source markdown-файлам.
 
 Содержит:
 - run_document_wiki_ingest: запуск добавления одного source-файла в wiki.
 - build_ingest_message: сборка пользовательского сообщения для IngestSupervisor.
-- main: запуск ingest-agent из IDE по константам файла.
+- main: запуск ingest-agent из IDE по списку source-файлов.
 - collect_wiki_snapshot: сбор фактического состояния wiki-файлов.
 - format_wiki_change_report: формирование отчета о реальных изменениях wiki.
 - format_wiki_files_report: формирование отчета о фактических wiki-файлах.
+- build_ingest_model: создание модели для запуска ingest-agent.
+- source_paths_to_process: получение списка source-файлов для обработки.
 - _last_message_text: извлечение текста последнего сообщения агента.
 """
 
 import hashlib
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+import urllib3
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from document_wiki.agent import build_document_wiki_ingest_agent
-from document_wiki.openrouter_runtime import ensure_openai_api_key, load_openrouter_model
 from document_wiki.paths import relative_to_document_wiki, require_inside_document_wiki
 from document_wiki.settings import DocumentWikiSettings, load_document_wiki_settings
 
 
+urllib3.disable_warnings()
+
+
 DEFAULT_RECURSION_LIMIT = 100
 DEFAULT_THREAD_ID = "document-wiki-ingest-ide"
-SOURCE_PATH = "sources/doc_002.md"
 WORKSPACE_ROOT = "."
 DOCUMENT_WIKI_ROOT = None
+SOURCE_PATH = "sources/doc_002.md"
+SOURCE_PATHS = [
+    "sources/doc_002.md",
+]
+PROCESS_ALL_SOURCES = False
+
+KITAI_HOST_SDK = "https://hcscr-ift.delta.sbrf.ru"
+CERT_FILE_PATH = r"C:\Users\23111424\IdeaProjects\FirstTest\src\config\client_crt.crt"
+CERT_KEY_FILE_PATH = r"C:\Users\23111424\IdeaProjects\FirstTest\src\config\client_key.key"
+KITAI_MODEL_NAME = "GigaChat-3-Ultra"
+KITAI_SYSTEM_NAME = "csp_lab"
+KITAI_MODULE_NAME = "csp_lab_antifraud_edge"
 
 
 def run_document_wiki_ingest(
@@ -64,7 +82,7 @@ def run_document_wiki_ingest(
         workspace_root=workspace_root,
         document_wiki_root=document_wiki_root,
     )
-    run_model = model or load_openrouter_model()
+    run_model = model or build_ingest_model()
     resolved_source_path = Path(source_path)
     if not resolved_source_path.is_absolute():
         resolved_source_path = resolved_settings.document_wiki_root / resolved_source_path
@@ -105,6 +123,49 @@ def build_ingest_message(source_path: str) -> str:
     )
 
 
+def build_ingest_model() -> Any:
+    """Создает модель для запуска document_wiki ingest-agent.
+
+    Args:
+        Отсутствуют. Функция использует константы подключения KitAI в этом модуле.
+
+    Returns:
+        Chat-модель, совместимая с DeepAgents.
+    """
+
+    from Deepagent_adapter import DeepAgentsKitaiChatModel
+
+    return DeepAgentsKitaiChatModel(
+        model=KITAI_MODEL_NAME,
+        kitai_host_sdk=KITAI_HOST_SDK,
+        cert_file=CERT_FILE_PATH,
+        key_file=CERT_KEY_FILE_PATH,
+        system_name=KITAI_SYSTEM_NAME,
+        module_name=KITAI_MODULE_NAME,
+    )
+
+
+def source_paths_to_process(settings: DocumentWikiSettings) -> list[str]:
+    """Возвращает список source-файлов для обработки.
+
+    Args:
+        settings: Настройки document_wiki с путем к директории sources.
+
+    Returns:
+        Список POSIX-путей source-файлов относительно директории document_wiki.
+    """
+
+    if PROCESS_ALL_SOURCES:
+        return [
+            path.relative_to(settings.document_wiki_root).as_posix()
+            for path in sorted(settings.sources_dir.glob("*.md"))
+            if path.is_file()
+        ]
+    if SOURCE_PATHS:
+        return list(SOURCE_PATHS)
+    return [SOURCE_PATH]
+
+
 def main() -> int:
     """Запускает ingest-agent из IDE по константам модуля.
 
@@ -115,24 +176,36 @@ def main() -> int:
         Код завершения процесса: ``0`` при успешном запуске.
     """
 
-    ensure_openai_api_key()
     settings = load_document_wiki_settings(
         workspace_root=WORKSPACE_ROOT,
         document_wiki_root=DOCUMENT_WIKI_ROOT,
     )
-    before_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
-    result = run_document_wiki_ingest(
-        source_path=SOURCE_PATH,
-        settings=settings,
-        invoke_config={
-            "recursion_limit": DEFAULT_RECURSION_LIMIT,
-            "configurable": {"thread_id": DEFAULT_THREAD_ID},
-        },
-    )
-    after_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
-    print(_last_message_text(result))
-    print()
-    print(format_wiki_change_report(before_snapshot, after_snapshot))
+    run_model = build_ingest_model()
+
+    for source_path in source_paths_to_process(settings):
+        started_at = time.perf_counter()
+        print(f"\nОбработка файла: {source_path}")
+        before_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
+        try:
+            result = run_document_wiki_ingest(
+                model=run_model,
+                source_path=source_path,
+                settings=settings,
+                invoke_config={
+                    "recursion_limit": DEFAULT_RECURSION_LIMIT,
+                    "configurable": {"thread_id": f"{DEFAULT_THREAD_ID}-{Path(source_path).stem}"},
+                },
+            )
+        except Exception as error:  # noqa: BLE001
+            print(f"Ошибка при обработке {source_path}: {error}")
+            continue
+
+        after_snapshot = collect_wiki_snapshot(settings.document_wiki_root)
+        print(_last_message_text(result))
+        print()
+        print(format_wiki_change_report(before_snapshot, after_snapshot))
+        print(f"Время обработки: {time.perf_counter() - started_at:.2f} секунд")
+
     print()
     print(format_wiki_files_report(settings.document_wiki_root))
     return 0
@@ -283,11 +356,13 @@ def _last_message_text(result: Any) -> str:
 
 __all__ = [
     "build_ingest_message",
+    "build_ingest_model",
     "collect_wiki_snapshot",
     "format_wiki_change_report",
     "format_wiki_files_report",
     "main",
     "run_document_wiki_ingest",
+    "source_paths_to_process",
 ]
 
 
